@@ -1,0 +1,230 @@
+
+# Install & load packages
+library("foreign")
+library("readxl")
+library(tidyverse)
+library(car)
+library(caret)
+library("gridExtra")
+library(pROC)
+library(dplyr)
+library(oddsratio)
+library(sjPlot)
+
+
+
+# Loading the data
+data1 <- read.table("Data_clean_unemployment.txt", header = TRUE, sep = "\t", fill = TRUE,
+                         quote = "")
+
+
+
+data2 <- as.data.frame(unclass(data1),stringsAsFactors=TRUE)
+
+str(data2)
+# change names
+
+data <- rename(data2, hospitalized = I.have.been.hospitalized.before.for.my.mental.illness)
+data <- rename(data, unemployed = I.am.unemployed)
+data <- rename(data, mental_illness = I.identify.as.having.a.mental.illness)
+data <- rename(data, number_hospitalized = How.many.times.were.you.hospitalized.for.your.mental.illness)
+data <- rename(data, days_hospitalized = How.many.days.were.you.hospitalized.for.your.mental.illness)
+
+# check for outliers
+
+summary(data$number_hospitalized)
+summary(data$days_hospitalized)
+
+boxplot(data$number_hospitalized, ylab = "number")
+boxplot.stats(data$number_hospitalized)$out
+
+boxplot(data$days_hospitalized, ylab = "number")
+boxplot.stats(data$days_hospitalized)$out
+
+days_plot <- ggplot(data = data, aes( x = unemployed, y = days_hospitalized)) +
+                    geom_point() +
+                    geom_smooth(method = glm) +
+                    ylim(0, 110) +
+                    ggtitle("days_plot")
+days_plot ## not any real use now
+
+
+number_plot <- ggplot(data = data, aes( x = unemployed, y = number_hospitalized)) +
+                    geom_point() +
+                    geom_smooth(method = glm) +
+                    ylim(0, 110) +
+                    ggtitle("number_plot")
+number_plot                    
+
+model5 <- glm(unemployed ~ number_hospitalized + days_hospitalized, family = "binomial", data=data)
+
+
+cooksD <- cooks.distance(model5)
+cooksD
+
+n <- nrow(data)
+
+plot(cooksD, main = "Cooks Distance for Influential Observations")
+abline(h = 20/n, lty = 2, col = "steelblue") 
+## 3 or 4 observations who were higher then the treshold. Decided to let them stay
+## because this is true data, where outliers are more common
+
+# Remove NA
+
+data$days_hospitalized[is.na(data$days_hospitalized)] <- 0
+summary(data$days_hospitalized) ## to check if they are removed
+
+data$Lack.of.concentration[is.na(data$Lack.of.concentration)] <- 0
+data$Obsessive.thinking[is.na(data$Obsessive.thinking)] <- 0
+data$Mood.swings[is.na(data$Mood.swings)] <- 0
+data$Panic.attacks[is.na(data$Panic.attacks)] <- 0
+data$Compulsive.behavior[is.na(data$Compulsive.behavior)] <- 0
+data$Tiredness[is.na(data$Tiredness)] <- 0
+
+sum(is.na(data$mental_illness))
+sum(is.na(data$hospitalized))
+sum(is.na(data$unemployed))
+sum(is.na(data$Lack.of.concentration))
+sum(is.na(data$Anxiety))
+sum(is.na(data$Depression))
+sum(is.na(data$Obsessive.thinking))
+sum(is.na(data$Mood.swings))
+sum(is.na(data$Panic.attacks))
+sum(is.na(data$Compulsive.behavior))
+sum(is.na(data$Tiredness))
+
+
+
+
+# variable info
+
+table(data$unemployed)
+table(data$mental_illness)
+table(data$hospitalized)
+table(data$Lack.of.concentration)
+table(data$Anxiety)
+table(data$Depression)
+table(data$Obsessive.thinking)
+table(data$Mood.swings)
+table(data$Panic.attacks)
+table(data$Compulsive.behavior)
+table(data$Tiredness)
+
+
+# logistic regression model
+
+set.seed(1)
+
+sample <- sample(c(TRUE, FALSE), nrow(data), replace=TRUE, prob=c(0.8,0.2))
+train <- data[sample, ]
+test <- data[!sample, ] 
+
+## SMOTE
+
+
+str(test)
+
+
+
+train$unemployed <- as.factor(train$unemployed)
+
+train$hospitalized <- as.factor(train$hospitalized) 
+
+
+train1<- SMOTE(unemployed~.,train,perc.over=200,k=10,perc.under=150,dup_size = 0)
+
+table(train1$unemployed)
+
+
+## model 1
+
+model1 <- glm(unemployed ~ hospitalized , family = "binomial", data=train1)
+summary(model1)
+
+or_glm(train1, model1, incr = list(hospitalized = 1), ci = 0.95)
+
+tab_model(model1)
+
+confint(model1)
+
+## model 2
+
+model2 <- glm(unemployed ~ Lack.of.concentration + Anxiety  +
+              Obsessive.thinking + Mood.swings + Panic.attacks + Compulsive.behavior +
+              Tiredness, family = "binomial", data=train1)
+summary(model2)
+
+or_glm(train1, model2, incr = list(Lack.of.concentration = 1, Anxiety = 1, 
+                                  Obsessive.thinking = 1, Mood.swings = 1, 
+                                  Panic.attacks = 1, Compulsive.behavior = 1,
+                                  Tiredness = 1), ci = 0.95)
+tab_model(model2)
+
+confint(model2)
+
+## model 3
+
+model3 <- glm(unemployed ~ hospitalized + mental_illness, family = "binomial", data=train1)
+summary(model3)
+
+or_glm(train1, model3, incr = list(hospitalized = 1, mental_illness = 1), ci = 0.95)
+tab_model(model3)
+
+confint(model3)
+
+# VIF values (all good) (stay the same)
+
+model4 <- glm(unemployed ~ hospitalized + mental_illness + Lack.of.concentration + Anxiety  +
+              Obsessive.thinking + Mood.swings + Panic.attacks + Compulsive.behavior +
+              Tiredness, family = "binomial", data=data)
+VIF_values <- vif(model4)
+
+min(VIF_values)
+max(VIF_values)
+
+VIF_values
+
+## ANOVA
+
+anova(model1,model3,test='Chisq')
+
+## Confusion Matrix 1
+
+test$unemployed <- as.factor(test$unemployed)
+test$hospitalized <- as.factor(test$hospitalized)
+
+
+mod_fit <- train(unemployed ~ hospitalized, data=train1, method="glm", family = "binomial",trControl=trainControl(method="repeatedcv", number=10, repeats=10))
+
+predicted1 <- predict(mod_fit, test)
+
+predicted1
+
+CM1 <- confusionMatrix(predicted1, test$unemployed)
+
+
+## Confusion Matrix 2
+
+mod_fit2 <- train(unemployed ~ Lack.of.concentration + Anxiety  +
+              Obsessive.thinking + Mood.swings + Panic.attacks + Compulsive.behavior +
+              Tiredness, data=train1, method="glm", family = "binomial",trControl=trainControl(method="repeatedcv", number=10, repeats=10))
+              
+predicted2 <- predict(mod_fit2, test)
+
+predicted2
+
+CM2 <- confusionMatrix(predicted2, test$unemployed)
+CM2
+
+
+## ROC model 1
+
+test$unemployed <- as.numeric(test$unemployed)
+
+test_roc1 <- roc(predicted1 ~ test$unemployed, plot = TRUE, print.auc = TRUE)
+
+
+## ROC model 3
+
+test_roc2 <- roc(predicted2 ~ test$unemployed, plot = TRUE, print.auc = TRUE)
+
