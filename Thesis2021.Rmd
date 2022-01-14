@@ -1,0 +1,284 @@
+
+# Install & load packages
+library("foreign")
+library("readxl")
+library(tidyverse)
+library(car)
+library(caret)
+library("gridExtra")
+library(pROC)
+library(dplyr)
+library(oddsratio)
+library(sjPlot)
+library(MASS)
+library(e1071)
+library(partykit)
+library(LiblineaR)
+library(rpart.plot)
+
+
+# Loading the data
+setwd("~/M Data Science and Society/Thesis")
+data1 <- read.table("Data_clean_unemployment.txt", header = TRUE, sep = "\t", fill = TRUE,
+                         quote = "")
+
+data2 <- as.data.frame(unclass(data1),stringsAsFactors=TRUE)
+
+str(data2)
+
+# change names
+
+data <- rename(data2, hospitalized = I.have.been.hospitalized.before.for.my.mental.illness)
+data <- rename(data, unemployed = I.am.unemployed)
+data <- rename(data, mental_illness = I.identify.as.having.a.mental.illness)
+data <- rename(data, number_hospitalized = How.many.times.were.you.hospitalized.for.your.mental.illness)
+data <- rename(data, days_hospitalized = How.many.days.were.you.hospitalized.for.your.mental.illness)
+
+# check for outliers
+
+summary(data$number_hospitalized)
+summary(data$days_hospitalized)
+
+boxplot(data$number_hospitalized, ylab = "number")
+boxplot.stats(data$number_hospitalized)$out
+
+boxplot(data$days_hospitalized, ylab = "number")
+boxplot.stats(data$days_hospitalized)$out
+
+days_plot <- ggplot(data = data, aes( x = unemployed, y = days_hospitalized)) +
+                    geom_point() +
+                    geom_smooth(method = glm) +
+                    ylim(0, 110) +
+                    ggtitle("days_plot")
+days_plot 
+
+
+number_plot <- ggplot(data = data, aes( x = unemployed, y = number_hospitalized)) +
+                    geom_point() +
+                    geom_smooth(method = glm) +
+                    ylim(0, 110) +
+                    ggtitle("number_plot")
+number_plot                    
+
+## Cooks distance
+
+model5 <- glm(unemployed ~ number_hospitalized + days_hospitalized, family = "binomial", data=data)
+
+
+cooksD <- cooks.distance(model5)
+
+n <- nrow(data)
+
+plot(cooksD, main = "Cooks Distance for Influential Observations")
+abline(h = 20/n, lty = 2, col = "steelblue") 
+
+
+# Remove NA
+
+data$days_hospitalized[is.na(data$days_hospitalized)] <- 0
+summary(data$days_hospitalized) ## to check if they are removed
+
+##datapoint 334 remove due to multiple NA
+
+data <- data[-c(334), ]
+
+# VIF values all
+
+model4 <- glm(unemployed ~ hospitalized + mental_illness + Lack.of.concentration + Anxiety  +
+              Obsessive.thinking + Mood.swings + Panic.attacks + Compulsive.behavior +
+              Tiredness + days_hospitalized + number_hospitalized, family = "binomial", data=data)
+VIF_values <- vif(model4)
+
+min(VIF_values)
+max(VIF_values)
+
+VIF_values
+
+
+# variable info
+
+table(data$unemployed)
+table(data$mental_illness)
+table(data$hospitalized)
+table(data$Lack.of.concentration)
+table(data$Anxiety)
+table(data$Depression)
+table(data$Obsessive.thinking)
+table(data$Mood.swings)
+table(data$Panic.attacks)
+table(data$Compulsive.behavior)
+table(data$Tiredness)
+
+
+# logistic regression model
+
+set.seed(1)
+
+sample <- sample(c(TRUE, FALSE), nrow(data), replace=TRUE, prob=c(0.8,0.2))
+train <- data[sample, ]
+test <- data[!sample, ] 
+
+## SMOTE
+
+str(test)
+
+train$unemployed <- as.factor(train$unemployed)
+
+train$hospitalized <- as.factor(train$hospitalized) 
+
+
+train1<- SMOTE(unemployed~.,train,perc.over=200,k=10,perc.under=150,dup_size = 0)
+
+table(train1$unemployed)
+
+## feature selection
+
+model_wrap <- glm(unemployed ~ hospitalized + mental_illness + Lack.of.concentration + Anxiety  +
+              Obsessive.thinking + Mood.swings + Panic.attacks + Compulsive.behavior +
+              Tiredness + number_hospitalized + days_hospitalized + Depression, family = "binomial", train1)
+
+summary(model_wrap)
+
+stepAIC(model_wrap, direction = "both", trace = FALSE) 
+
+model_final <- glm(unemployed ~ hospitalized + mental_illness + Lack.of.concentration + Anxiety + Panic.attacks + Compulsive.behavior,
+                    family = "binomial", train1)
+
+summary(model_final)
+
+
+## VIF values after feature selection
+
+model4 <- glm(unemployed ~ hospitalized + mental_illness + Lack.of.concentration + Anxiety + Panic.attacks + Compulsive.behavior,
+                    family = "binomial", data)
+VIF_values <- vif(model4)
+
+min(VIF_values)
+max(VIF_values)
+
+VIF_values
+
+
+## Logistic regression model
+
+model_lg <- glm(unemployed ~ hospitalized + mental_illness + Lack.of.concentration + Anxiety + Panic.attacks + Compulsive.behavior,
+                family = "binomial", data=train1)
+
+summary(model_lg)
+
+test$unemployed <- as.factor(test$unemployed)
+test$hospitalized <- as.factor(test$hospitalized)
+
+modfit_lg <- train(unemployed ~ hospitalized + mental_illness + Lack.of.concentration + Anxiety + Panic.attacks + Compulsive.behavior,
+                  data=train1, method="glm", family = "binomial",trControl=trainControl(method="repeatedcv", number=10, repeats=10))
+                  
+
+predicted_lg <- predict(modfit_lg, test)
+
+predicted_lg
+
+CM_lg <- confusionMatrix(predicted_lg, test$unemployed)
+CM_lg
+
+## variable performance logistic regression
+
+model_test <- glm(unemployed ~ hospitalized + mental_illness + Lack.of.concentration + Anxiety + Panic.attacks + Compulsive.behavior,
+                family = "binomial", data=test)
+
+summary(model_test)
+
+or_glm(test, model_test, incr = list(hospitalized = 1, mental_illness = 1, Lack.of.concentration = 1, Anxiety = 1,  
+                                  Panic.attacks = 1, Compulsive.behavior = 1), ci = 0.95)
+
+## SVM model
+
+set.seed(1)
+
+HPtuningSVM <- tune(svm,unemployed ~ hospitalized + mental_illness + Lack.of.concentration + Anxiety + Panic.attacks + 
+                        Compulsive.behavior, data=train1,
+                        ranges = list(gamma = c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2,5), 
+                        cost = c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2,5),
+                        kernel=c("linear", "polynomial","radial", "sigmoid")),
+                        tunecontrol = tune.control(sampling = "fix")
+)
+
+summary(HPtuningSVM)
+
+
+classifierSVM = svm(formula = unemployed ~ hospitalized + mental_illness + Lack.of.concentration + Anxiety + Panic.attacks + 
+                  Compulsive.behavior, data=train1,
+                 type = 'C-classification',
+                 kernel = 'polynomial',
+                 gamma = 0.75,
+                 cost = 0.5)
+                 
+
+y_predSVM = predict(classifierSVM, test)
+
+CM_svm2 <- confusionMatrix(table(y_predSVM, test$unemployed))
+
+CM_svm2
+
+
+## decision tree
+
+## parms tested with information and gini
+
+set.seed(1)
+
+model_dt1 <- rpart(unemployed ~ hospitalized + mental_illness + Lack.of.concentration + Anxiety + Panic.attacks + Compulsive.behavior,
+                  data=train1, method = 'class', parms = list(split = "information"),
+                  control = rpart.control(cp = .00001, minsplit = 5, minbucket = 5,
+                  maxdepth = 10, xval =10 ))
+
+rpart.plot(model_dt1, extra = 106)
+
+printcp(model_dt1) ##check when xerror is lowest, cp = 0.0072464
+
+plotcp(model_dt1)
+
+bestcp <- model_dt1$cptable[which.min(model_dt1$cptable[,"xerror"]),"CP"]
+
+pruned <- prune(model_dt1, cp = bestcp)
+
+rpart.plot(pruned, extra = 106)
+
+predicted_dt1 <- predict(pruned, test, type = "class")
+
+CM_dt1 <- confusionMatrix(table(predicted_dt1, test$unemployed))
+
+CM_dt1
+
+
+## ROC model lg
+
+test$unemployed <- as.numeric(test$unemployed)
+
+roc_lg <- roc(predicted_lg ~ test$unemployed, plot = TRUE, print.auc = TRUE)
+
+
+## ROC SVM
+
+roc_svm <- roc(y_predSVM ~ test$unemployed, plot = TRUE, print.auc = TRUE)
+
+
+## ROC DT
+
+roc_dt <- roc(predicted_dt1 ~ test$unemployed, plot = TRUE, print.auc = TRUE)
+
+## baseline
+
+table(test$unemployed)
+## 0 = 41, 1 = 17
+
+accuracy_zeroR <- 41/58
+accuracy_zeroR
+
+sensitivity_zeroR <- 0/17
+sensitivity_zeroR
+
+specificity_zeroZ <- 41/41
+specificity_zeroZ
+
+
+
